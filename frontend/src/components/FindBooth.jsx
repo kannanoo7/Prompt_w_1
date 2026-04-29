@@ -33,7 +33,7 @@ export default function FindBooth() {
     );
   };
 
-  const mapsApiKey = "AIzaSyDs_nI-OmdUEDZjcpPDnsIR49Ac6jryJak";
+  const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
   return (
     <div className="glass" style={{ padding: '1.5rem', borderRadius: '12px', marginTop: '1.5rem', maxHeight: '70vh', overflowY: 'auto' }}>

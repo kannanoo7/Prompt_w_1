@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 5000;
 // Initialize Google Generative AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-pro',
     systemInstruction: `You are a helpful, accurate, and neutral Election Assistant designed specifically for Indian elections.
 Your primary job is to explain the election process, timelines, and concepts in simple, easy-to-understand language.
 You should be able to explain concepts like "NOTA" (None of the Above), voter registration, EVMs (Electronic Voting Machines), VVPAT, and phases of voting.
@@ -64,9 +64,9 @@ app.post('/api/chat', async (req, res) => {
                         format: 'text' // Keep as text or 'html' based on your needs
                     }
                 );
-                
+
                 if (translateResponse.data && translateResponse.data.data && translateResponse.data.data.translations) {
-                     responseText = translateResponse.data.data.translations[0].translatedText;
+                    responseText = translateResponse.data.data.translations[0].translatedText;
                 }
             } catch (translateError) {
                 console.error("Translation error:", translateError.response ? translateError.response.data : translateError.message);

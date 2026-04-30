@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { db } from '../firebase';
@@ -12,13 +12,13 @@ export default function ChatAssistant({ language }) {
   const [sessions, setSessions] = useState([]);
   const messagesEndRef = useRef(null);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, scrollToBottom]);
 
   // Load all sessions on mount
   useEffect(() => {
@@ -31,7 +31,7 @@ export default function ChatAssistant({ language }) {
         });
         setSessions(loadedSessions);
       } catch (error) {
-        console.error("Error fetching sessions:", error);
+        console.error('Error fetching sessions:', error);
       }
     };
     fetchSessions();
@@ -43,7 +43,6 @@ export default function ChatAssistant({ language }) {
     if (!currentSessionId) {
       currentSessionId = 'session_' + Math.random().toString(36).substring(2, 15);
       localStorage.setItem('chatSessionId', currentSessionId);
-      // Immediately save new session to firestore so it's tracked
       setDoc(doc(db, 'chats', currentSessionId), { createdAt: serverTimestamp() }).catch(console.error);
     }
     setSessionId(currentSessionId);
@@ -53,43 +52,50 @@ export default function ChatAssistant({ language }) {
   // Fetch messages whenever sessionId changes
   useEffect(() => {
     if (!sessionId) return;
-    
+
     const fetchMessages = async () => {
       try {
         const q = query(
-          collection(db, `chats/${sessionId}/messages`), 
+          collection(db, `chats/${sessionId}/messages`),
           orderBy('createdAt', 'asc')
         );
         const querySnapshot = await getDocs(q);
-        
+
         if (!querySnapshot.empty) {
           const loadedMessages = [];
           querySnapshot.forEach((docSnap) => {
-            loadedMessages.push(docSnap.data());
+            loadedMessages.push({ id: docSnap.id, ...docSnap.data() });
           });
           setMessages(loadedMessages);
         } else {
-          // Default welcome message
-          setMessages([
-            { role: 'model', parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }] }
-          ]);
+          setMessages([{
+            id: 'welcome',
+            role: 'model',
+            parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }],
+          }]);
         }
       } catch (error) {
-        console.error("Error fetching messages from Firestore:", error);
-        setMessages([
-          { role: 'model', parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }] }
-        ]);
+        console.error('Error fetching messages from Firestore:', error);
+        setMessages([{
+          id: 'welcome-fallback',
+          role: 'model',
+          parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }],
+        }]);
       }
     };
 
     fetchMessages();
   }, [sessionId]);
 
-  const handleSend = async (textInput) => {
+  const handleSend = useCallback(async (textInput) => {
     const text = textInput || input;
-    if (!text.trim()) return;
+    if (!text.trim() || loading) return;
 
-    const userMessage = { role: 'user', parts: [{ text }] };
+    const userMessage = {
+      id: `user_${Date.now()}`,
+      role: 'user',
+      parts: [{ text }],
+    };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
     setInput('');
@@ -99,105 +105,127 @@ export default function ChatAssistant({ language }) {
       // Save user message to Firestore
       try {
         await addDoc(collection(db, `chats/${sessionId}/messages`), {
-          ...userMessage,
-          createdAt: serverTimestamp()
+          role: userMessage.role,
+          parts: userMessage.parts,
+          createdAt: serverTimestamp(),
         });
       } catch (fsError) {
-        console.error("Firestore write error (user msg):", fsError);
+        console.error('Firestore write error (user msg):', fsError);
       }
 
-      // Format history for Gemini API
-      const history = messages.map(msg => ({
-        role: msg.role === 'model' ? 'model' : 'user',
-        parts: msg.parts
-      }));
+      // Trim history to last 10 messages to limit token usage
+      const history = messages
+        .slice(-10)
+        .map(msg => ({
+          role: msg.role === 'model' ? 'model' : 'user',
+          parts: msg.parts,
+        }));
 
-      const response = await fetch('http://localhost:5000/api/chat', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history, targetLanguage: language })
+        body: JSON.stringify({ message: text, history, targetLanguage: language }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
 
       const data = await response.json();
       if (data.text) {
-        const botMessage = { role: 'model', parts: [{ text: data.text }] };
+        const botMessage = {
+          id: `bot_${Date.now()}`,
+          role: 'model',
+          parts: [{ text: data.text }],
+        };
         setMessages(prev => [...prev, botMessage]);
 
         // Save bot response to Firestore
         try {
           await addDoc(collection(db, `chats/${sessionId}/messages`), {
-            ...botMessage,
-            createdAt: serverTimestamp()
+            role: botMessage.role,
+            parts: botMessage.parts,
+            createdAt: serverTimestamp(),
           });
         } catch (fsError) {
-          console.error("Firestore write error (bot msg):", fsError);
+          console.error('Firestore write error (bot msg):', fsError);
         }
       } else {
         throw new Error('No text in response');
       }
     } catch (error) {
       console.error('Error sending message:', error);
-      setMessages(prev => [...prev, { role: 'model', parts: [{ text: 'Sorry, I am having trouble connecting right now. Please try again later.' }] }]);
+      setMessages(prev => [...prev, {
+        id: `error_${Date.now()}`,
+        role: 'model',
+        parts: [{ text: 'Sorry, I am having trouble connecting right now. Please try again later.' }],
+      }]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [input, messages, sessionId, language, loading]);
 
-  const handleKeyPress = (e) => {
+  const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
-  };
+  }, [handleSend]);
 
-  const quickPrompts = [
-    "What is NOTA?",
-    "How does EVM work?",
-    "Am I eligible to vote?",
-    "What ID do I need to vote?"
-  ];
+  const quickPrompts = useMemo(() => [
+    'What is NOTA?',
+    'How does EVM work?',
+    'Am I eligible to vote?',
+    'What ID do I need to vote?',
+  ], []);
 
   // Create a new chat session
-  const startNewSession = () => {
+  const startNewSession = useCallback(() => {
     const newId = 'session_' + Math.random().toString(36).substring(2, 15);
     localStorage.setItem('chatSessionId', newId);
     setSessionId(newId);
     setMessages([]);
     setSessions(prev => [...prev, newId]);
-    // Immediately save new session to firestore so it's tracked
     setDoc(doc(db, 'chats', newId), { createdAt: serverTimestamp() }).catch(console.error);
-  };
+  }, []);
 
   // Switch to an existing session
-  const selectSession = (id) => {
+  const selectSession = useCallback((id) => {
     localStorage.setItem('chatSessionId', id);
     setSessionId(id);
-  };
+  }, []);
 
   return (
     <div className="chat-container glass" style={{ display: 'flex', flexDirection: 'row', height: '100%', overflow: 'hidden', padding: 0 }}>
-      
+
       {/* Sidebar for Session History */}
-      <div className="chat-sidebar" style={{ 
-        width: '250px', 
-        borderRight: '1px solid var(--surface-border)', 
-        display: 'flex', 
-        flexDirection: 'column', 
-        background: 'rgba(0,0,0,0.1)',
-        borderTopLeftRadius: '16px',
-        borderBottomLeftRadius: '16px'
-      }}>
+      <div
+        className="chat-sidebar"
+        style={{
+          width: '250px',
+          borderRight: '1px solid var(--surface-border)',
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'rgba(0,0,0,0.1)',
+          borderTopLeftRadius: '16px',
+          borderBottomLeftRadius: '16px',
+        }}
+      >
         <div style={{ padding: '1rem', borderBottom: '1px solid var(--surface-border)' }}>
           <button className="btn-primary" onClick={startNewSession} style={{ width: '100%' }}>
             + New Session
           </button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
-          <h3 style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#888', marginBottom: '0.5rem', paddingLeft: '0.5rem' }}>Past Sessions</h3>
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+          <h3 style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#888', marginBottom: '0.5rem', paddingLeft: '0.5rem' }}>
+            Past Sessions
+          </h3>
+          <ul role="listbox" aria-label="Chat sessions" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
             {sessions.map(id => (
               <li key={id} style={{ marginBottom: '0.25rem' }}>
                 <button
+                  role="option"
+                  aria-selected={id === sessionId}
                   style={{
                     background: id === sessionId ? 'var(--primary)' : 'transparent',
                     color: id === sessionId ? 'white' : 'var(--text-color)',
@@ -208,7 +236,7 @@ export default function ChatAssistant({ language }) {
                     borderRadius: '8px',
                     cursor: 'pointer',
                     fontSize: '0.9rem',
-                    transition: 'all 0.2s'
+                    transition: 'all 0.2s',
                   }}
                   onClick={() => selectSession(id)}
                 >
@@ -229,9 +257,15 @@ export default function ChatAssistant({ language }) {
         </div>
 
         {/* Messages */}
-        <div className="chat-messages" aria-live="polite" style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`message ${msg.role === 'user' ? 'user' : 'bot'}`}>
+        <div
+          role="log"
+          className="chat-messages"
+          aria-live="polite"
+          aria-label="Chat messages"
+          style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}
+        >
+          {messages.map((msg) => (
+            <div key={msg.id} className={`message ${msg.role === 'user' ? 'user' : 'bot'}`}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', fontWeight: 'bold' }}>
                 {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
                 {msg.role === 'user' ? 'You' : 'Assistant'}
@@ -246,8 +280,8 @@ export default function ChatAssistant({ language }) {
             </div>
           ))}
           {loading && (
-            <div className="message bot">
-              <Loader2 className="animate-spin" size={20} />
+            <div className="message bot" role="status" aria-label="Assistant is typing">
+              <Loader2 className="animate-spin" size={20} aria-hidden="true" />
             </div>
           )}
           <div ref={messagesEndRef} />
@@ -256,9 +290,9 @@ export default function ChatAssistant({ language }) {
         {/* Input Area */}
         <div className="chat-input-area" style={{ padding: '1.5rem', borderTop: '1px solid var(--surface-border)' }}>
           <div className="quick-prompts" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
-            {quickPrompts.map((prompt, i) => (
-              <button 
-                key={i} 
+            {quickPrompts.map((prompt) => (
+              <button
+                key={prompt}
                 className="quick-prompt-btn"
                 onClick={() => handleSend(prompt)}
                 disabled={loading}
@@ -267,20 +301,21 @@ export default function ChatAssistant({ language }) {
               </button>
             ))}
           </div>
-          
-          <div className="chat-form" style={{ display: 'flex', gap: '0.5rem' }}>
+
+          <div className="chat-form" aria-busy={loading} style={{ display: 'flex', gap: '0.5rem' }}>
             <input
               type="text"
               className="chat-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyPress={handleKeyPress}
+              onKeyDown={handleKeyDown}
               placeholder="Ask a question about elections..."
               aria-label="Chat input"
               disabled={loading}
+              maxLength={2000}
             />
-            <button 
-              className="btn-primary" 
+            <button
+              className="btn-primary"
               onClick={() => handleSend()}
               disabled={loading || !input.trim()}
               aria-label="Send message"

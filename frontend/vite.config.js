@@ -12,11 +12,13 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          // Separate vendor chunks for better caching
-          'vendor-react': ['react', 'react-dom'],
-          'vendor-firebase': ['firebase'],
-          'vendor-ui': ['lucide-react', 'react-markdown'],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react')) return 'vendor-react';
+            if (id.includes('firebase')) return 'vendor-firebase';
+            if (id.includes('lucide-react') || id.includes('react-markdown')) return 'vendor-ui';
+            return 'vendor';
+          }
         },
       },
     },

@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { MapPin, Search, Navigation } from 'lucide-react';
+import './FindBooth.css';
 
-export default function FindBooth() {
+function FindBooth() {
   const [location, setLocation] = useState('');
   const [origin, setOrigin] = useState('');
   const [loadingLoc, setLoadingLoc] = useState(false);
@@ -40,29 +41,27 @@ export default function FindBooth() {
 
   const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
-  // Memoize the iframe src URL to avoid recomputing on unrelated re-renders
   const mapSrc = useMemo(() => {
     if (!origin || !mapsApiKey) return null;
     return `https://www.google.com/maps/embed/v1/directions?key=${mapsApiKey}&origin=${encodeURIComponent(origin)}&destination=polling+booth+near+${encodeURIComponent(origin)}`;
   }, [origin, mapsApiKey]);
 
   return (
-    <div className="glass" style={{ padding: '1.5rem', borderRadius: '12px', marginTop: '1.5rem', maxHeight: '70vh', overflowY: 'auto' }}>
-      <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', color: 'var(--primary)' }}>
+    <div className="booth-container glass">
+      <h2 className="booth-title">
         <MapPin size={24} />
         Find Your Voting Booth Directions
       </h2>
-      <p style={{ marginBottom: '1rem', color: '#555' }}>
+      <p className="booth-description">
         Enter your location or use your device's GPS to get directions to the nearest polling station.
       </p>
 
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+      <div className="booth-actions">
         <button
           onClick={handleCurrentLocation}
           disabled={loadingLoc}
-          className="btn-primary"
+          className="btn-primary btn-gps"
           aria-label="Use my current GPS location"
-          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#34d399' }}
         >
           <Navigation size={18} />
           {loadingLoc ? 'Finding...' : 'Use Current Location'}
@@ -70,25 +69,19 @@ export default function FindBooth() {
       </div>
 
       {error && (
-        <p role="alert" style={{ color: '#f87171', marginBottom: '1rem', fontSize: '0.9rem' }}>
+        <p role="alert" className="error-msg">
           {error}
         </p>
       )}
 
-      <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+      <form onSubmit={handleSearch} className="booth-form">
         <input
           type="text"
+          className="booth-input"
           value={location}
           onChange={(e) => setLocation(e.target.value)}
           placeholder="Or enter your starting location..."
           aria-label="Enter your starting location"
-          style={{
-            flex: 1,
-            padding: '0.75rem',
-            borderRadius: '8px',
-            border: '1px solid #ccc',
-            fontSize: '1rem',
-          }}
           required
           minLength={3}
         />
@@ -99,7 +92,7 @@ export default function FindBooth() {
       </form>
 
       {mapSrc && (
-        <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #eee' }}>
+        <div className="map-wrapper">
           <iframe
             title="Polling booth directions map"
             width="100%"
@@ -115,3 +108,5 @@ export default function FindBooth() {
     </div>
   );
 }
+
+export default React.memo(FindBooth);

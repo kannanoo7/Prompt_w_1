@@ -1,5 +1,6 @@
 import React from 'react';
 import { Calendar, CalendarPlus, CheckCircle2 } from 'lucide-react';
+import './Timeline.css';
 
 const phases = [
   {
@@ -25,14 +26,14 @@ const phases = [
   }
 ];
 
-export default function Timeline() {
+function Timeline() {
   return (
     <div className="timeline-container glass">
       <div className="timeline-header">
-        <h2 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+        <h2>
           <Calendar size={24} /> Election Timeline
         </h2>
-        <p style={{ color: 'var(--accent)', fontSize: '0.875rem' }}>General Elections 2024</p>
+        <p className="timeline-header-subtitle">General Elections 2024</p>
       </div>
       
       <div className="timeline-events">
@@ -44,7 +45,7 @@ export default function Timeline() {
             <div className="event-content">
               <div className="event-date">{phase.date}</div>
               <div className="event-title">{phase.title}</div>
-              <p style={{ fontSize: '0.875rem', opacity: 0.8 }}>{phase.description}</p>
+              <p className="event-description">{phase.description}</p>
               
               <a 
                 href={phase.calendarLink} 
@@ -62,3 +63,5 @@ export default function Timeline() {
     </div>
   );
 }
+
+export default React.memo(Timeline);

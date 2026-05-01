@@ -26,24 +26,24 @@ describe('App Component', () => {
     expect(screen.getByRole('tab', { name: /timeline/i })).toBeInTheDocument();
   });
 
-  it('shows ChatAssistant by default', () => {
+  it('shows ChatAssistant by default', async () => {
     render(<App />);
-    expect(screen.getByTestId('chat-assistant')).toBeInTheDocument();
+    expect(await screen.findByTestId('chat-assistant')).toBeInTheDocument();
     expect(screen.queryByTestId('find-booth')).not.toBeInTheDocument();
     expect(screen.queryByTestId('timeline')).not.toBeInTheDocument();
   });
 
-  it('switches to Find Booth tab when clicked', () => {
+  it('switches to Find Booth tab when clicked', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('tab', { name: /find booth/i }));
-    expect(screen.getByTestId('find-booth')).toBeInTheDocument();
+    expect(await screen.findByTestId('find-booth')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-assistant')).not.toBeInTheDocument();
   });
 
-  it('switches to Timeline tab when clicked', () => {
+  it('switches to Timeline tab when clicked', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('tab', { name: /timeline/i }));
-    expect(screen.getByTestId('timeline')).toBeInTheDocument();
+    expect(await screen.findByTestId('timeline')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-assistant')).not.toBeInTheDocument();
   });
 

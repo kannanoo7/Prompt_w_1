@@ -1,14 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import ChatAssistant from './components/ChatAssistant';
-import Timeline from './components/Timeline';
-import FindBooth from './components/FindBooth';
-import { Check, Type, Globe } from 'lucide-react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { Check, Globe, Type } from 'lucide-react';
 import './App.css';
+
+const ChatAssistant = lazy(() => import('./components/ChatAssistant'));
+const Timeline = lazy(() => import('./components/Timeline'));
+const FindBooth = lazy(() => import('./components/FindBooth'));
+
+function LoadingPanel() {
+  return (
+    <div role="status" aria-live="polite" style={{ padding: '1rem' }}>
+      Loading...
+    </div>
+  );
+}
 
 function App() {
   const [simpleLanguage, setSimpleLanguage] = useState(false);
   const [language, setLanguage] = useState('en');
-  const [activeWidget, setActiveWidget] = useState('chat'); // 'chat', 'booth', 'timeline'
+  const [activeWidget, setActiveWidget] = useState('chat');
 
   useEffect(() => {
     if (simpleLanguage) {
@@ -19,7 +28,6 @@ function App() {
   }, [simpleLanguage]);
 
   useEffect(() => {
-    // Trigger Google Translate when language changes
     const translateCombo = document.querySelector('.goog-te-combo');
     if (translateCombo) {
       translateCombo.value = language;
@@ -61,7 +69,6 @@ function App() {
         <h1>Smart Election Assistant</h1>
         <p style={{ opacity: 0.8, marginTop: '0.5rem' }}>Your guide to the election process, voting steps, and key dates.</p>
 
-        {/* Tab navigation with proper ARIA roles */}
         <div
           role="tablist"
           aria-label="Main navigation"
@@ -104,34 +111,36 @@ function App() {
       </header>
 
       <main className="main-content" style={{ display: 'flex', flexDirection: 'column' }}>
-        {activeWidget === 'chat' && (
-          <div
-            id="panel-chat"
-            role="tabpanel"
-            aria-labelledby="tab-chat"
-            style={{ flex: 1, display: 'flex', overflow: 'hidden' }}
-          >
-            <ChatAssistant language={language} />
-          </div>
-        )}
-        {activeWidget === 'booth' && (
-          <div
-            id="panel-booth"
-            role="tabpanel"
-            aria-labelledby="tab-booth"
-          >
-            <FindBooth />
-          </div>
-        )}
-        {activeWidget === 'timeline' && (
-          <div
-            id="panel-timeline"
-            role="tabpanel"
-            aria-labelledby="tab-timeline"
-          >
-            <Timeline />
-          </div>
-        )}
+        <Suspense fallback={<LoadingPanel />}>
+          {activeWidget === 'chat' && (
+            <div
+              id="panel-chat"
+              role="tabpanel"
+              aria-labelledby="tab-chat"
+              style={{ flex: 1, display: 'flex', overflow: 'hidden' }}
+            >
+              <ChatAssistant language={language} />
+            </div>
+          )}
+          {activeWidget === 'booth' && (
+            <div
+              id="panel-booth"
+              role="tabpanel"
+              aria-labelledby="tab-booth"
+            >
+              <FindBooth />
+            </div>
+          )}
+          {activeWidget === 'timeline' && (
+            <div
+              id="panel-timeline"
+              role="tabpanel"
+              aria-labelledby="tab-timeline"
+            >
+              <Timeline />
+            </div>
+          )}
+        </Suspense>
       </main>
     </div>
   );

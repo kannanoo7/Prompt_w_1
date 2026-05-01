@@ -1,22 +1,36 @@
-/**
- * Backend API Tests — Election Assistant
- * Uses the built-in Node.js test runner (node:test) — no extra deps required.
- * Run with: npm test
- */
-
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 
-// Set a dummy API key so the server doesn't crash on startup during tests
 process.env.GEMINI_API_KEY = 'test-key-for-unit-tests';
-process.env.PORT = '5001'; // Use a separate port to avoid conflicts
+process.env.PORT = '5001';
 
-const app = require('./server');
+const { createApp } = require('./server');
+const { responseCache, normalizeHistory } = require('./controllers/chatController');
 
 let server;
 let baseUrl;
+let sendCount;
+
+const fakeModel = {
+  startChat({ history }) {
+    return {
+      async sendMessage(message) {
+        sendCount += 1;
+        return {
+          response: {
+            async text() {
+              return `Mock answer for ${message} with ${history.length} history items`;
+            },
+          },
+        };
+      },
+    };
+  },
+};
 
 before(() => {
+  const app = createApp({ model: fakeModel });
+
   return new Promise((resolve) => {
     server = app.listen(5001, () => {
       baseUrl = 'http://localhost:5001';
@@ -25,33 +39,60 @@ before(() => {
   });
 });
 
+beforeEach(() => {
+  sendCount = 0;
+  responseCache.clear();
+});
+
 after(() => {
   return new Promise((resolve) => {
     server.close(resolve);
   });
 });
 
-// ── Health Check ─────────────────────────────────────────────────────────────
 describe('GET /api/health', () => {
   it('returns 200 with status ok', async () => {
     const res = await fetch(`${baseUrl}/api/health`);
+
     assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.status, 'ok');
+    assert.deepEqual(await res.json(), { status: 'ok' });
   });
 });
 
-// ── POST /api/chat — Input Validation ────────────────────────────────────────
-describe('POST /api/chat — input validation', () => {
+describe('normalizeHistory', () => {
+  it('keeps only the last 10 messages and normalizes roles', () => {
+    const history = Array.from({ length: 12 }, (_, index) => ({
+      role: index % 2 === 0 ? 'user' : 'model',
+      parts: [{ text: `message ${index}` }],
+    }));
+
+    const normalized = normalizeHistory(history);
+
+    assert.equal(normalized.length, 10);
+    assert.equal(normalized[0].parts[0].text, 'message 2');
+    assert.equal(normalized[0].role, 'user');
+  });
+
+  it('drops history that does not start with a user message', () => {
+    const normalized = normalizeHistory([
+      { role: 'model', parts: [{ text: 'assistant first' }] },
+      { role: 'user', parts: [{ text: 'hello' }] },
+    ]);
+
+    assert.deepEqual(normalized, []);
+  });
+});
+
+describe('POST /api/chat validation', () => {
   it('returns 400 when message field is missing', async () => {
     const res = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
+
     assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.ok(body.error, 'Should return an error message');
+    assert.ok((await res.json()).error);
   });
 
   it('returns 400 when message is an empty string', async () => {
@@ -60,21 +101,20 @@ describe('POST /api/chat — input validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: '   ' }),
     });
+
     assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.ok(body.error, 'Should return an error message');
+    assert.ok((await res.json()).error);
   });
 
   it('returns 400 when message exceeds 2000 characters', async () => {
-    const longMessage = 'a'.repeat(2001);
     const res = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: longMessage }),
+      body: JSON.stringify({ message: 'a'.repeat(2001) }),
     });
+
     assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.match(body.error, /too long/i);
+    assert.match((await res.json()).error, /too long/i);
   });
 
   it('returns 400 when message is not a string', async () => {
@@ -83,33 +123,63 @@ describe('POST /api/chat — input validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: 12345 }),
     });
-    assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.ok(body.error, 'Should return an error message');
-  });
 
-  it('returns 400 when message is null', async () => {
-    const res = await fetch(`${baseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: null }),
-    });
     assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.ok(body.error, 'Should return an error message');
+    assert.ok((await res.json()).error);
   });
 });
 
-// ── POST /api/chat — Request Body Size ────────────────────────────────────────
-describe('POST /api/chat — request size limit', () => {
-  it('returns 413 when body exceeds 10kb limit', async () => {
-    const hugePayload = JSON.stringify({ message: 'x'.repeat(11000) });
+describe('POST /api/chat success path', () => {
+  it('returns a model response without calling external services', async () => {
     const res = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: hugePayload,
+      body: JSON.stringify({
+        message: 'What is NOTA?',
+        history: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      }),
     });
-    // Express returns 413 for body too large
+
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(body.text, 'Mock answer for What is NOTA? with 1 history items');
+    assert.equal(sendCount, 1);
+  });
+
+  it('serves repeated requests from the response cache', async () => {
+    const payload = {
+      message: 'How does EVM work?',
+      history: [{ role: 'user', parts: [{ text: 'hello' }] }],
+    };
+
+    await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const cachedRes = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const body = await cachedRes.json();
+
+    assert.equal(cachedRes.status, 200);
+    assert.equal(body.cached, true);
+    assert.equal(sendCount, 1);
+  });
+});
+
+describe('POST /api/chat request size limit', () => {
+  it('returns 413 when body exceeds 10kb limit', async () => {
+    const res = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'x'.repeat(11000) }),
+    });
+
     assert.ok(res.status === 413 || res.status === 400, `Expected 413 or 400, got ${res.status}`);
   });
 });

@@ -2,14 +2,100 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Send, Bot, User, Loader2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { db } from '../firebase';
-import { collection, addDoc, getDocs, query, orderBy, serverTimestamp, doc, setDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, query, orderBy, limitToLast, serverTimestamp, doc, setDoc } from 'firebase/firestore';
+import './ChatAssistant.css';
+
+const CHAT_HISTORY_LIMIT = 10;
+const SESSION_MESSAGE_LIMIT = 50;
+const REQUEST_TIMEOUT_MS = 20000;
+const WELCOME_MESSAGE = {
+  id: 'welcome',
+  role: 'model',
+  parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }],
+};
+
+// --- Utilities ---
+function createSessionId() {
+  if (globalThis.crypto?.randomUUID) {
+    return `session_${globalThis.crypto.randomUUID()}`;
+  }
+  return `session_${Math.random().toString(36).substring(2, 15)}`;
+}
+
+function getInitialSession() {
+  let id = localStorage.getItem('chatSessionId');
+  let isNew = false;
+  if (!id) {
+    id = createSessionId();
+    localStorage.setItem('chatSessionId', id);
+    isNew = true;
+  }
+  return { id, isNew };
+}
+
+function toChatHistory(messages) {
+  return messages
+    .slice(-CHAT_HISTORY_LIMIT)
+    .map((msg) => ({
+      role: msg.role === 'model' ? 'model' : 'user',
+      parts: msg.parts,
+    }));
+}
+
+// --- Sub-components ---
+
+const ChatSidebar = React.memo(({ sessions, sessionId, onNewSession, onSelectSession }) => (
+  <div className="chat-sidebar">
+    <div className="chat-sidebar-header">
+      <button className="btn-primary" onClick={onNewSession} style={{ width: '100%' }}>
+        + New Session
+      </button>
+    </div>
+    <div className="chat-sidebar-content">
+      <h3 className="chat-sidebar-title">Past Sessions</h3>
+      <ul className="session-list" role="listbox" aria-label="Chat sessions">
+        {sessions.map(id => (
+          <li key={id} className="session-item">
+            <button
+              role="option"
+              aria-selected={id === sessionId}
+              className={`session-button ${id === sessionId ? 'active' : ''}`}
+              onClick={() => onSelectSession(id)}
+            >
+              {id.replace('session_', 'Session ')}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  </div>
+));
+
+const MessageItem = React.memo(({ msg }) => (
+  <div className={`message ${msg.role === 'user' ? 'user' : 'bot'}`}>
+    <div className="message-header">
+      {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
+      {msg.role === 'user' ? 'You' : 'Assistant'}
+    </div>
+    <div className={msg.role === 'model' ? 'markdown-body' : ''}>
+      {msg.role === 'model' ? (
+        <ReactMarkdown>{msg.parts[0].text}</ReactMarkdown>
+      ) : (
+        <p>{msg.parts[0].text}</p>
+      )}
+    </div>
+  </div>
+));
+
+// --- Main Component ---
 
 export default function ChatAssistant({ language }) {
+  const [initialSession] = useState(getInitialSession);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [sessionId, setSessionId] = useState('');
-  const [sessions, setSessions] = useState([]);
+  const [sessionId, setSessionId] = useState(initialSession.id);
+  const [sessions, setSessions] = useState([initialSession.id]);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = useCallback(() => {
@@ -22,9 +108,11 @@ export default function ChatAssistant({ language }) {
 
   // Load all sessions on mount
   useEffect(() => {
+    let isMounted = true;
     const fetchSessions = async () => {
       try {
         const querySnapshot = await getDocs(collection(db, 'chats'));
+        if (!isMounted) return;
         const loadedSessions = [];
         querySnapshot.forEach((docSnap) => {
           loadedSessions.push(docSnap.id);
@@ -35,31 +123,29 @@ export default function ChatAssistant({ language }) {
       }
     };
     fetchSessions();
+    return () => { isMounted = false; };
   }, []);
 
-  // Initialize Session ID on mount
   useEffect(() => {
-    let currentSessionId = localStorage.getItem('chatSessionId');
-    if (!currentSessionId) {
-      currentSessionId = 'session_' + Math.random().toString(36).substring(2, 15);
-      localStorage.setItem('chatSessionId', currentSessionId);
-      setDoc(doc(db, 'chats', currentSessionId), { createdAt: serverTimestamp() }).catch(console.error);
+    if (initialSession.isNew) {
+      setDoc(doc(db, 'chats', sessionId), { createdAt: serverTimestamp() }).catch(console.error);
     }
-    setSessionId(currentSessionId);
-    setSessions(prev => prev.includes(currentSessionId) ? prev : [...prev, currentSessionId]);
-  }, []);
+  }, [initialSession.isNew, sessionId]);
 
   // Fetch messages whenever sessionId changes
   useEffect(() => {
     if (!sessionId) return;
+    let isMounted = true;
 
     const fetchMessages = async () => {
       try {
         const q = query(
           collection(db, `chats/${sessionId}/messages`),
-          orderBy('createdAt', 'asc')
+          orderBy('createdAt', 'asc'),
+          limitToLast(SESSION_MESSAGE_LIMIT)
         );
         const querySnapshot = await getDocs(q);
+        if (!isMounted) return;
 
         if (!querySnapshot.empty) {
           const loadedMessages = [];
@@ -68,23 +154,16 @@ export default function ChatAssistant({ language }) {
           });
           setMessages(loadedMessages);
         } else {
-          setMessages([{
-            id: 'welcome',
-            role: 'model',
-            parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }],
-          }]);
+          setMessages([{ id: 'welcome', ...WELCOME_MESSAGE }]);
         }
       } catch (error) {
         console.error('Error fetching messages from Firestore:', error);
-        setMessages([{
-          id: 'welcome-fallback',
-          role: 'model',
-          parts: [{ text: 'Namaste! I am your Election Assistant. Ask me anything about the election process, voting, or concepts like NOTA.' }],
-        }]);
+        if (isMounted) setMessages([{ ...WELCOME_MESSAGE, id: 'welcome-fallback' }]);
       }
     };
 
     fetchMessages();
+    return () => { isMounted = false; };
   }, [sessionId]);
 
   const handleSend = useCallback(async (textInput) => {
@@ -96,10 +175,10 @@ export default function ChatAssistant({ language }) {
       role: 'user',
       parts: [{ text }],
     };
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
+    setMessages(prev => [...prev, userMessage]);
     setInput('');
     setLoading(true);
+    let timeoutId;
 
     try {
       // Save user message to Firestore
@@ -113,23 +192,17 @@ export default function ChatAssistant({ language }) {
         console.error('Firestore write error (user msg):', fsError);
       }
 
-      // Trim history to last 10 messages to limit token usage
-      const history = messages
-        .slice(-10)
-        .map(msg => ({
-          role: msg.role === 'model' ? 'model' : 'user',
-          parts: msg.parts,
-        }));
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history, targetLanguage: language }),
+        body: JSON.stringify({ message: text, history: toChatHistory(messages), targetLanguage: language }),
+        signal: controller.signal,
       });
 
-      if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
 
       const data = await response.json();
       if (data.text) {
@@ -161,6 +234,7 @@ export default function ChatAssistant({ language }) {
         parts: [{ text: 'Sorry, I am having trouble connecting right now. Please try again later.' }],
       }]);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   }, [input, messages, sessionId, language, loading]);
@@ -179,9 +253,8 @@ export default function ChatAssistant({ language }) {
     'What ID do I need to vote?',
   ], []);
 
-  // Create a new chat session
   const startNewSession = useCallback(() => {
-    const newId = 'session_' + Math.random().toString(36).substring(2, 15);
+    const newId = createSessionId();
     localStorage.setItem('chatSessionId', newId);
     setSessionId(newId);
     setMessages([]);
@@ -189,95 +262,29 @@ export default function ChatAssistant({ language }) {
     setDoc(doc(db, 'chats', newId), { createdAt: serverTimestamp() }).catch(console.error);
   }, []);
 
-  // Switch to an existing session
   const selectSession = useCallback((id) => {
     localStorage.setItem('chatSessionId', id);
     setSessionId(id);
   }, []);
 
   return (
-    <div className="chat-container glass" style={{ display: 'flex', flexDirection: 'row', height: '100%', overflow: 'hidden', padding: 0 }}>
+    <div className="chat-container glass">
+      <ChatSidebar 
+        sessions={sessions} 
+        sessionId={sessionId} 
+        onNewSession={startNewSession} 
+        onSelectSession={selectSession} 
+      />
 
-      {/* Sidebar for Session History */}
-      <div
-        className="chat-sidebar"
-        style={{
-          width: '250px',
-          borderRight: '1px solid var(--surface-border)',
-          display: 'flex',
-          flexDirection: 'column',
-          background: 'rgba(0,0,0,0.1)',
-          borderTopLeftRadius: '16px',
-          borderBottomLeftRadius: '16px',
-        }}
-      >
-        <div style={{ padding: '1rem', borderBottom: '1px solid var(--surface-border)' }}>
-          <button className="btn-primary" onClick={startNewSession} style={{ width: '100%' }}>
-            + New Session
-          </button>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0.5rem' }}>
-          <h3 style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#888', marginBottom: '0.5rem', paddingLeft: '0.5rem' }}>
-            Past Sessions
-          </h3>
-          <ul role="listbox" aria-label="Chat sessions" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {sessions.map(id => (
-              <li key={id} style={{ marginBottom: '0.25rem' }}>
-                <button
-                  role="option"
-                  aria-selected={id === sessionId}
-                  style={{
-                    background: id === sessionId ? 'var(--primary)' : 'transparent',
-                    color: id === sessionId ? 'white' : 'var(--text-color)',
-                    border: 'none',
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: '0.75rem 1rem',
-                    borderRadius: '8px',
-                    cursor: 'pointer',
-                    fontSize: '0.9rem',
-                    transition: 'all 0.2s',
-                  }}
-                  onClick={() => selectSession(id)}
-                >
-                  {id.replace('session_', 'Session ')}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-
-      {/* Main Chat Area */}
-      <div className="chat-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', borderBottom: '1px solid var(--surface-border)' }}>
-          <h2 style={{ margin: 0, fontSize: '1.25rem' }}>Election Assistant</h2>
-          <span style={{ fontSize: '0.8rem', color: '#888' }}>{sessionId}</span>
+      <div className="chat-main">
+        <div className="chat-header">
+          <h2>Election Assistant</h2>
+          <span className="chat-header-session">{sessionId}</span>
         </div>
 
-        {/* Messages */}
-        <div
-          role="log"
-          className="chat-messages"
-          aria-live="polite"
-          aria-label="Chat messages"
-          style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}
-        >
+        <div role="log" className="chat-messages" aria-live="polite" aria-label="Chat messages">
           {messages.map((msg) => (
-            <div key={msg.id} className={`message ${msg.role === 'user' ? 'user' : 'bot'}`}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', fontWeight: 'bold' }}>
-                {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
-                {msg.role === 'user' ? 'You' : 'Assistant'}
-              </div>
-              <div className={msg.role === 'model' ? 'markdown-body' : ''}>
-                {msg.role === 'model' ? (
-                  <ReactMarkdown>{msg.parts[0].text}</ReactMarkdown>
-                ) : (
-                  <p>{msg.parts[0].text}</p>
-                )}
-              </div>
-            </div>
+            <MessageItem key={msg.id} msg={msg} />
           ))}
           {loading && (
             <div className="message bot" role="status" aria-label="Assistant is typing">
@@ -287,9 +294,8 @@ export default function ChatAssistant({ language }) {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area */}
-        <div className="chat-input-area" style={{ padding: '1.5rem', borderTop: '1px solid var(--surface-border)' }}>
-          <div className="quick-prompts" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1rem' }}>
+        <div className="chat-input-area">
+          <div className="quick-prompts">
             {quickPrompts.map((prompt) => (
               <button
                 key={prompt}
@@ -302,7 +308,7 @@ export default function ChatAssistant({ language }) {
             ))}
           </div>
 
-          <div className="chat-form" aria-busy={loading} style={{ display: 'flex', gap: '0.5rem' }}>
+          <div className="chat-form" aria-busy={loading}>
             <input
               type="text"
               className="chat-input"
